@@ -1,0 +1,11 @@
+node_modules/
+dist/
+data/
+downloads/
+tools/
+artifacts/
+.probe/
+.npm-cache/
+*.log
+.env
+.DS_Store

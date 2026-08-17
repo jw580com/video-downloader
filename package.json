@@ -1,0 +1,34 @@
+{
+  "name": "video-download-manager",
+  "private": true,
+  "version": "1.0.0",
+  "description": "在线视频下载管理器 —— 统一管理你的在线视频下载任务",
+  "type": "module",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c blue,magenta \"npm --workspace @vdm/server run dev\" \"npm --workspace @vdm/web run dev\"",
+    "dev:server": "npm --workspace @vdm/server run dev",
+    "dev:web": "npm --workspace @vdm/web run dev",
+    "build": "npm --workspace @vdm/web run build && npm --workspace @vdm/server run build",
+    "start": "npm --workspace @vdm/server run start",
+    "typecheck": "npm --workspace @vdm/server run typecheck && npm --workspace @vdm/web run typecheck",
+    "media-server": "node scripts/media-server.mjs",
+    "test:smoke": "node scripts/smoke.mjs",
+    "test:batch-delete": "node scripts/batch-delete-test.mjs",
+    "test:parsers": "node scripts/parsers-test.mjs",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:stress": "node scripts/stress.mjs",
+    "test:recovery": "node scripts/recovery.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1",
+    "puppeteer-core": "^23.9.0",
+    "typescript": "~5.6.2"
+  }
+}

@@ -1,0 +1,16 @@
+services:
+  video-download-manager:
+    build: .
+    container_name: video-download-manager
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      DATA_DIR: "./data"
+      DOWNLOAD_DIR: "./downloads"
+      MAX_CONCURRENCY: "3"
+    volumes:
+      - ./data:/app/data
+      - ./downloads:/app/downloads
+    restart: unless-stopped
