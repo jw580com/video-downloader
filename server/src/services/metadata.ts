@@ -5,8 +5,9 @@ import { findCompletedByUrl } from '../db/tasks.js';
 import { findParserForHost, type ParserRow } from '../db/parsers.js';
 import { AppError, isAppError } from '../errors.js';
 import { detectPlatform, extOf, MEDIA_EXTENSIONS, normalizeUrl, PLATFORM_NAMES, type Platform } from './platforms.js';
-import { hasFfmpeg, runYtdlpJson, type YtDlpInfo } from './ytdlp.js';
+import { hasFfmpeg, runYtdlpJson, type YtDlpFormat, type YtDlpInfo } from './ytdlp.js';
 import { runScriptParser } from './parserScript.js';
+import { createProxyAgent } from './proxy.js';
 
 export const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
@@ -180,25 +181,30 @@ function fromYtdlp(u: URL, info: YtDlpInfo, platform: Platform): VideoInfo {
   const videoExts = new Set(videoFmts.map((f) => (f.ext ?? '').toLowerCase()).filter(Boolean));
   const audioExts = new Set(audioFmts.map((f) => (f.ext ?? '').toLowerCase()).filter(Boolean));
   const ffmpeg = hasFfmpeg();
+  const sizeOf = (f: YtDlpFormat): number => f.filesize ?? f.filesize_approx ?? 0;
+  const maxSizeOf = (list: YtDlpFormat[]): number =>
+    list.reduce((max, f) => Math.max(max, sizeOf(f)), 0);
   const formats: FormatOption[] = [];
   const wanted = ['mp4', 'webm', 'mkv'];
   for (const e of wanted) {
-    if (videoExts.has(e) || (ffmpeg && videoExts.size > 0)) formats.push({ value: e, label: e.toUpperCase() });
+    if (videoExts.has(e) || (ffmpeg && videoExts.size > 0)) {
+      const size = maxSizeOf(videoFmts.filter((f) => (f.ext ?? '').toLowerCase() === e));
+      formats.push({ value: e, label: e.toUpperCase(), ...(size > 0 ? { sizeBytes: size } : {}) });
+    }
   }
-  if (audioExts.has('m4a')) formats.push({ value: 'm4a', label: 'M4A (音频)' });
+  if (audioExts.has('m4a')) {
+    const size = maxSizeOf(audioFmts.filter((f) => (f.ext ?? '').toLowerCase() === 'm4a'));
+    formats.push({ value: 'm4a', label: 'M4A (音频)', ...(size > 0 ? { sizeBytes: size } : {}) });
+  }
   if (ffmpeg) formats.push({ value: 'mp3', label: 'MP3 (音频)' });
   if (formats.length === 0) {
     formats.push({ value: 'mp4', label: 'MP4' });
   }
-  // 估算文件大小：优先 mp4、最高画质、有 filesize 的格式
-  const sizeFmt = [...fmts]
-    .filter((f) => f.filesize || f.filesize_approx)
-    .sort((a, b) => {
-      const sa = a.filesize ?? a.filesize_approx ?? 0;
-      const sb = b.filesize ?? b.filesize_approx ?? 0;
-      return sb - sa;
-    })[0];
-  const sizeBytes = sizeFmt ? (sizeFmt.filesize ?? sizeFmt.filesize_approx ?? undefined) : undefined;
+  // 估算文件大小：优先“最高画质的视频流”，避免把纯音频或合并后的估算值当成整片大小
+  const sizeFmt = [...videoFmts]
+    .filter((f) => sizeOf(f) > 0)
+    .sort((a, b) => (b.height ?? 0) - (a.height ?? 0) || sizeOf(b) - sizeOf(a))[0];
+  const sizeBytes = sizeFmt ? sizeOf(sizeFmt) || undefined : undefined;
 
   return {
     url: u.href,
@@ -223,13 +229,14 @@ interface ProbeResult {
 }
 
 /** 直接探测 URL（HEAD，必要时降级为 Range GET），跟随重定向 */
-function probeUrl(rawUrl: string, timeoutMs = 12000): Promise<ProbeResult> {
+function probeUrl(rawUrl: string, timeoutMs = 12000, proxyUrl = ''): Promise<ProbeResult> {
   return new Promise((resolve, reject) => {
     let url = rawUrl;
     let redirects = 0;
     const attempt = (method: 'HEAD' | 'GET') => {
       const u = new URL(url);
       const mod = u.protocol === 'https:' ? https : http;
+      const agent = createProxyAgent(u.href, proxyUrl, { timeoutMs });
       const req = mod.request(
         u,
         {
@@ -239,6 +246,7 @@ function probeUrl(rawUrl: string, timeoutMs = 12000): Promise<ProbeResult> {
             ...(method === 'GET' ? { Range: 'bytes=0-0' } : {}),
           },
           timeout: timeoutMs,
+          ...(agent ? { agent } : {}),
         },
         (res) => {
           const code = res.statusCode ?? 0;
@@ -248,8 +256,19 @@ function probeUrl(rawUrl: string, timeoutMs = 12000): Promise<ProbeResult> {
               reject(new AppError('NETWORK_ERROR', '重定向次数过多'));
               return;
             }
-            url = new URL(res.headers.location, url).href;
+            const next = new URL(res.headers.location, url);
+            if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+              reject(new AppError('VIDEO_UNAVAILABLE', '重定向到不支持的地址'));
+              return;
+            }
+            url = next.href;
             attempt('HEAD');
+            return;
+          }
+          // 部分服务器拒绝 HEAD（403/405/501）：降级为 Range GET 再探测一次
+          if (method === 'HEAD' && [400, 403, 405, 501].includes(code)) {
+            res.resume();
+            attempt('GET');
             return;
           }
           res.destroy();
@@ -263,7 +282,8 @@ function probeUrl(rawUrl: string, timeoutMs = 12000): Promise<ProbeResult> {
         const msg = e.message ?? '';
         if (msg.includes('probe-timeout')) reject(new AppError('TIMEOUT'));
         else if (e.code === 'ENOTFOUND' || e.code === 'ECONNREFUSED' || e.code === 'ECONNRESET') {
-          reject(new AppError('NETWORK_ERROR', `无法连接目标服务器（${e.code}）`));
+          const proxyHint = proxyUrl ? `（代理 ${proxyUrl}）` : '';
+          reject(new AppError('NETWORK_ERROR', `网络连接失败：无法连接目标服务器（${e.code}）${proxyHint}`));
         } else reject(new AppError('NETWORK_ERROR'));
       });
       req.end();
@@ -274,21 +294,25 @@ function probeUrl(rawUrl: string, timeoutMs = 12000): Promise<ProbeResult> {
 
 function guessExtFromContentType(ct: string): string {
   const m = ct.toLowerCase();
-  if (m.includes('mp4')) return 'mp4';
+  // audio/mp4 必须在 video/mp4 之前判断，否则会被错误命名为 .mp4
+  if (m.includes('audio/mp4') || m.includes('audio/x-m4a') || m.includes('m4a')) return 'm4a';
+  if (m.includes('video/mp4')) return 'mp4';
+  if (m.includes('audio/mpeg') || m.includes('audio/mp3')) return 'mp3';
+  if (m.includes('video/mpeg')) return 'mp4';
   if (m.includes('webm')) return 'webm';
-  if (m.includes('x-matroska')) return 'mkv';
+  if (m.includes('x-matroska') || m.includes('matroska')) return 'mkv';
   if (m.includes('quicktime')) return 'mov';
-  if (m.includes('mpeg')) return 'mp3';
   if (m.includes('ogg')) return 'ogg';
-  if (m.includes('m4a') || m.includes('mp4a')) return 'm4a';
   if (m.includes('flac')) return 'flac';
+  if (m.includes('aac')) return 'aac';
+  if (m.includes('wav')) return 'wav';
   return '';
 }
 
-async function probeDirect(u: URL): Promise<VideoInfo> {
+async function probeDirect(u: URL, proxyUrl = ''): Promise<VideoInfo> {
   let probe: ProbeResult;
   try {
-    probe = await probeUrl(u.href);
+    probe = await probeUrl(u.href, 12000, proxyUrl);
   } catch (e) {
     if (e instanceof AppError && e.code === 'TIMEOUT' && extOf(u) !== '') {
       // HEAD 超时但路径像媒体文件：仍允许加入队列，下载时再验证
@@ -299,9 +323,15 @@ async function probeDirect(u: URL): Promise<VideoInfo> {
   }
   const ct = String(probe.headers['content-type'] ?? '').toLowerCase();
   const ext = extOf(u) || guessExtFromContentType(ct);
+  if (probe.statusCode === 404 || probe.statusCode === 410) throw new AppError('VIDEO_NOT_FOUND');
+  if (probe.statusCode === 401 || probe.statusCode === 403) {
+    throw new AppError('AUTH_REQUIRED', `该视频需要登录或存在访问控制（HTTP ${probe.statusCode}）`);
+  }
+  if (probe.statusCode >= 500) {
+    throw new AppError('VIDEO_UNAVAILABLE', `目标服务器暂时不可用（HTTP ${probe.statusCode}）`);
+  }
   const isMediaType = ct.startsWith('video/') || ct.startsWith('audio/') || MEDIA_EXTENSIONS.includes(ext);
   if (!isMediaType) {
-    if (probe.statusCode === 404) throw new AppError('VIDEO_NOT_FOUND');
     if (probe.statusCode >= 200 && probe.statusCode < 400) {
       // 普通网页而非媒体文件 → 交给 yt-dlp 通用解析
       throw new AppError('NOT_MEDIA');
@@ -350,6 +380,7 @@ async function parseWithCustomParser(
   u: URL,
   parser: ParserRow,
   duplicate?: DuplicateInfo,
+  proxyUrl = '',
 ): Promise<VideoInfo> {
   if (parser.type === 'script') {
     const out = await runScriptParser(parser.script, u.href, 30000, `解析源「${parser.name}」`);
@@ -386,7 +417,7 @@ async function parseWithCustomParser(
       duplicate,
     };
   }
-  const info = await runYtdlpJson(u.href, 30000, parser.cookiesFile, parser.ytdlpArgs, parser.headers);
+  const info = await runYtdlpJson(u.href, 30000, parser.cookiesFile, parser.ytdlpArgs, parser.headers, proxyUrl);
   const mapped = fromYtdlp(u, info, 'direct');
   return {
     ...mapped,
@@ -398,7 +429,12 @@ async function parseWithCustomParser(
   };
 }
 
-export async function parseVideo(db: DB, rawUrl: unknown, cookiesFile = ''): Promise<VideoInfo> {
+export async function parseVideo(
+  db: DB,
+  rawUrl: unknown,
+  cookiesFile = '',
+  proxyUrl = '',
+): Promise<VideoInfo> {
   const u = normalizeUrl(rawUrl);
   const platform = detectPlatform(u);
   const done = findCompletedByUrl(db, u.href);
@@ -409,16 +445,16 @@ export async function parseVideo(db: DB, rawUrl: unknown, cookiesFile = ''): Pro
   if (platform === 'direct') {
     // 1) 自定义解析源（域名匹配，内置平台优先于自定义）
     const parser = findParserForHost(db, u.hostname);
-    if (parser) return parseWithCustomParser(u, parser, duplicate);
+    if (parser) return parseWithCustomParser(u, parser, duplicate, proxyUrl);
     // 2) 快速探测直链媒体（HEAD / Range GET，命中视频/音频则走直链引擎）
     try {
-      const info = await probeDirect(u);
+      const info = await probeDirect(u, proxyUrl);
       return { ...info, duplicate };
     } catch (e) {
       if (!isAppError(e) || e.code !== 'NOT_MEDIA') throw e;
       // 3) 普通网页 → 交给 yt-dlp 通用解析（覆盖 1900+ 站点）
       try {
-        const info = await runYtdlpJson(u.href, 30000, cookiesFile);
+        const info = await runYtdlpJson(u.href, 30000, cookiesFile, '', '', proxyUrl);
         const mapped = fromYtdlp(u, info, 'generic');
         return { ...mapped, platformName: info.extractor ?? '通用平台', duplicate };
       } catch (e2) {
@@ -431,7 +467,7 @@ export async function parseVideo(db: DB, rawUrl: unknown, cookiesFile = ''): Pro
   }
 
   try {
-    const info = await runYtdlpJson(u.href, 30000, cookiesFile);
+    const info = await runYtdlpJson(u.href, 30000, cookiesFile, '', '', proxyUrl);
     return { ...fromYtdlp(u, info, platform), duplicate };
   } catch (e) {
     if (isAppError(e) && e.code === 'YTDLP_MISSING') {

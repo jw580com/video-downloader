@@ -54,20 +54,23 @@ export function normalizeUrl(raw: unknown): URL {
   return u;
 }
 
+/** 域名匹配：等于域名本身或为其子域名（避免误匹配 notyoutube.com 之类的域名） */
+function hostMatches(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
 export function detectPlatform(u: URL): Platform {
-  let host = u.hostname.toLowerCase().replace(/^www\./, '').replace(/^m\./, '');
-  if (host.endsWith('.')) host = host.slice(0, -1);
-  if (host === 'youtube.com' || host === 'youtu.be' || host === 'music.youtube.com') {
+  let host = u.hostname.toLowerCase().replace(/\.$/, '');
+  if (host.startsWith('www.')) host = host.slice(4);
+  if (hostMatches(host, 'youtube.com') || hostMatches(host, 'youtu.be') || hostMatches(host, 'youtube-nocookie.com')) {
     return 'youtube';
   }
-  if (host === 'bilibili.com' || host === 'b23.tv') return 'bilibili';
-  if (host === 'vimeo.com' || host === 'player.vimeo.com') return 'vimeo';
-  if (host === 'x.com' || host === 'twitter.com' || host === 't.co') return 'x';
-  if (host === 'tiktok.com' || host === 'vm.tiktok.com') return 'tiktok';
-  if (host === 'douyin.com' || host === 'v.douyin.com' || host === 'iesdouyin.com') {
-    return 'douyin';
-  }
-  if (host === 'instagram.com' || host === 'instagr.am') return 'instagram';
+  if (hostMatches(host, 'bilibili.com') || hostMatches(host, 'b23.tv')) return 'bilibili';
+  if (hostMatches(host, 'vimeo.com')) return 'vimeo';
+  if (hostMatches(host, 'x.com') || hostMatches(host, 'twitter.com') || hostMatches(host, 't.co')) return 'x';
+  if (hostMatches(host, 'tiktok.com')) return 'tiktok';
+  if (hostMatches(host, 'douyin.com') || hostMatches(host, 'iesdouyin.com')) return 'douyin';
+  if (hostMatches(host, 'instagram.com') || hostMatches(host, 'instagr.am')) return 'instagram';
   return 'direct';
 }
 

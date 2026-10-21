@@ -64,7 +64,7 @@ export default function DashboardPage() {
         />
         <StatCard
           icon={<Zap className="h-5 w-5" />}
-          label="下载中"
+          label="进行中"
           value={overview?.downloading ?? '—'}
           accent="violet"
         />
@@ -98,7 +98,11 @@ export default function DashboardPage() {
         </Card>
         <Card title="下载成功率" description="完成 /（完成+失败）">
           <div className="flex h-full items-center justify-center py-4">
-            <SuccessRing rate={overview?.successRate ?? 0} />
+            {overview && overview.completedTotal + overview.failedTotal === 0 ? (
+              <p className="text-sm text-slate-400">暂无已结束的任务</p>
+            ) : (
+              <SuccessRing rate={overview?.successRate ?? 0} />
+            )}
           </div>
         </Card>
       </div>

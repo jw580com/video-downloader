@@ -15,7 +15,9 @@ export type Platform =
   | 'vimeo'
   | 'x'
   | 'tiktok'
+  | 'douyin'
   | 'instagram'
+  | 'generic'
   | 'direct';
 
 export interface Task {
@@ -99,6 +101,7 @@ export interface Settings {
   timeoutSec: number;
   autoRetries: number;
   cookiesFile: string;
+  proxyUrl: string;
 }
 
 export interface StatsOverview {
@@ -115,6 +118,12 @@ export interface StatsOverview {
 
 export interface PlatformCount {
   platform: string;
+  count: number;
+}
+
+export interface PlatformOption {
+  platform: string;
+  name: string;
   count: number;
 }
 

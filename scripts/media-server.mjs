@@ -12,6 +12,7 @@
 import http from 'node:http';
 
 const PORT = Number(process.env.MEDIA_PORT || 8099);
+const HOST = process.env.MEDIA_HOST || '127.0.0.1';
 const CHUNK = 64 * 1024;
 
 function sleep(ms) {
@@ -45,6 +46,26 @@ const server = http.createServer(async (req, res) => {
   if (u.pathname === '/redirect') {
     res.writeHead(302, { location: '/media/2' });
     res.end();
+    return;
+  }
+  // 只允许 GET、拒绝 HEAD 的服务器（用于测试解析时的 HEAD → GET 降级）
+  if (u.pathname === '/head405') {
+    if (isHead) {
+      res.writeHead(405, { allow: 'GET', 'content-type': 'application/json' });
+      res.end(isHead ? undefined : JSON.stringify({ error: 'method not allowed' }));
+      return;
+    }
+    res.writeHead(302, { location: '/media/1?name=head405.mp4' });
+    res.end();
+    return;
+  }
+  // 延迟 4 秒才返回响应头（用于测试“响应前暂停”不会卡住任务）
+  if (u.pathname === '/slowheaders') {
+    setTimeout(() => {
+      if (res.destroyed) return;
+      res.writeHead(302, { location: '/media/2?name=slowheaders.mp4' });
+      res.end();
+    }, 4000);
     return;
   }
   // HEAD 正常、GET 中途断流（用于测试下载中断的失败处理）
@@ -152,6 +173,6 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`[media-server] listening on http://127.0.0.1:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`[media-server] listening on http://${HOST}:${PORT}`);
 });

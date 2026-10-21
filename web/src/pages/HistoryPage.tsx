@@ -4,10 +4,12 @@ import { useTasks } from '../hooks/useTasks';
 import { api } from '../lib/api';
 import { formatBytes, formatDateTime } from '../lib/format';
 import { PLATFORM_META } from '../lib/constants';
+import type { PlatformOption } from '../lib/types';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Modal } from '../components/ui/Modal';
+import { Pagination } from '../components/Pagination';
 import { StatusBadge } from '../components/StatusBadge';
 import { PlatformBadge } from '../components/PlatformBadge';
 import { TaskActions, CopyPathButton } from '../components/TaskActions';
@@ -16,6 +18,9 @@ import { useToast } from '../context/ToastContext';
 
 const STATUS_FILTERS = [
   { value: '', label: '全部状态' },
+  { value: 'waiting', label: '等待中' },
+  { value: 'downloading,parsing', label: '下载中' },
+  { value: 'paused', label: '已暂停' },
   { value: 'completed', label: '已完成' },
   { value: 'failed', label: '失败' },
   { value: 'cancelled', label: '已取消' },
@@ -25,6 +30,8 @@ const SORTS = [
   { value: 'desc', label: '时间倒序' },
   { value: 'asc', label: '时间正序' },
 ];
+
+const PAGE_SIZE = 50;
 
 function SelectCheckbox({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
   return (
@@ -44,11 +51,18 @@ export default function HistoryPage() {
   const [platform, setPlatform] = useState('');
   const [status, setStatus] = useState('');
   const [sort, setSort] = useState('desc');
+  const [page, setPage] = useState(0);
 
   useEffect(() => {
-    const t = window.setTimeout(() => setDebounced(search.trim()), 300);
+    const next = search.trim();
+    // 初始挂载（值未变化）时不要重置页码
+    if (next === debounced) return;
+    const t = window.setTimeout(() => {
+      setDebounced(next);
+      setPage(0);
+    }, 300);
     return () => window.clearTimeout(t);
-  }, [search]);
+  }, [search, debounced]);
 
   const params = useMemo(
     () => ({
@@ -57,19 +71,60 @@ export default function HistoryPage() {
       search: debounced || undefined,
       sort: 'completed_at',
       order: (sort === 'asc' ? 'asc' : 'desc') as 'asc' | 'desc',
-      limit: 200,
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
     }),
-    [status, platform, debounced, sort],
+    [status, platform, debounced, sort, page],
   );
 
   const { tasks, total, loading, refresh } = useTasks(params, 5000);
   const toast = useToast();
+
+  const [platformOptions, setPlatformOptions] = useState<PlatformOption[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getPlatforms()
+      .then((r) => {
+        if (!cancelled) setPlatformOptions(r.platforms);
+      })
+      .catch(() => {
+        // 平台列表加载失败时保留内置平台
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [total]);
+
+  // 内置平台 + 任务中出现过的自定义解析源平台（带数量）
+  const platformFilters = useMemo(() => {
+    const map = new Map<string, { value: string; label: string; count: number }>();
+    for (const [key, meta] of Object.entries(PLATFORM_META)) {
+      map.set(key, { value: key, label: meta.name, count: 0 });
+    }
+    for (const p of platformOptions) {
+      const existing = map.get(p.platform);
+      if (existing) {
+        existing.count = p.count;
+        // 内置平台使用内置显示名；仅自定义平台使用任务快照里的名称
+        if (p.name && p.name !== p.platform) existing.label = p.name;
+      } else {
+        map.set(p.platform, { value: p.platform, label: p.name || p.platform, count: p.count });
+      }
+    }
+    return [...map.values()];
+  }, [platformOptions]);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchOpen, setBatchOpen] = useState(false);
   const [deleteAllOpen, setDeleteAllOpen] = useState(false);
   const [withFiles, setWithFiles] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    if (page > pages - 1) setPage(pages - 1);
+  }, [total, page]);
 
   const allSelected = tasks.length > 0 && tasks.every((t) => selected.has(t.id));
 
@@ -93,7 +148,11 @@ export default function HistoryPage() {
       const r = await api.batchDelete([...selected], withFiles);
       toast.success(
         `已删除 ${r.deleted} 条记录`,
-        r.filesDeleted > 0 ? `同时删除了 ${r.filesDeleted} 个文件` : '已下载文件已保留',
+        r.failed > 0
+          ? `${r.failed} 条记录删除失败，请重试`
+          : r.filesDeleted > 0
+            ? `同时删除了 ${r.filesDeleted} 个文件`
+            : '已下载文件已保留',
       );
       setSelected(new Set());
       setBatchOpen(false);
@@ -117,7 +176,11 @@ export default function HistoryPage() {
       });
       toast.success(
         `已删除 ${r.deleted} 条记录`,
-        r.filesDeleted > 0 ? `同时删除了 ${r.filesDeleted} 个文件` : '已下载文件已保留',
+        r.failed > 0
+          ? `${r.failed} 条记录删除失败，请重试`
+          : r.filesDeleted > 0
+            ? `同时删除了 ${r.filesDeleted} 个文件`
+            : '已下载文件已保留',
       );
       setSelected(new Set());
       setDeleteAllOpen(false);
@@ -159,26 +222,39 @@ export default function HistoryPage() {
           </span>
           <input
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(0);
+              setSelected(new Set());
+            }}
             placeholder="搜索视频名称或链接…"
             className="h-10 w-full rounded-lg border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500"
           />
         </div>
         <select
           value={platform}
-          onChange={(e) => setPlatform(e.target.value)}
+          onChange={(e) => {
+            setPlatform(e.target.value);
+            setPage(0);
+            setSelected(new Set());
+          }}
           className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
         >
           <option value="">全部平台</option>
-          {Object.entries(PLATFORM_META).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v.name}
+          {platformFilters.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+              {p.count > 0 ? ` (${p.count})` : ''}
             </option>
           ))}
         </select>
         <select
           value={status}
-          onChange={(e) => setStatus(e.target.value)}
+          onChange={(e) => {
+            setStatus(e.target.value);
+            setPage(0);
+            setSelected(new Set());
+          }}
           className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
         >
           {STATUS_FILTERS.map((s) => (
@@ -189,7 +265,11 @@ export default function HistoryPage() {
         </select>
         <select
           value={sort}
-          onChange={(e) => setSort(e.target.value)}
+          onChange={(e) => {
+            setSort(e.target.value);
+            setPage(0);
+            setSelected(new Set());
+          }}
           className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
         >
           {SORTS.map((s) => (
@@ -337,6 +417,17 @@ export default function HistoryPage() {
           更新中…
         </p>
       ) : null}
+
+      <Pagination
+        page={page}
+        pageSize={PAGE_SIZE}
+        total={total}
+        unit="条记录"
+        onChange={(next) => {
+          setPage(next);
+          setSelected(new Set());
+        }}
+      />
 
       {/* 批量删除确认 */}
       <Modal

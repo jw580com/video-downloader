@@ -52,7 +52,8 @@ export function getOverview(db: DB): StatsOverview {
   const completedTotal = one(db, "SELECT COUNT(*) AS c FROM tasks WHERE status = 'completed'");
   const failedTotal = one(db, "SELECT COUNT(*) AS c FROM tasks WHERE status = 'failed'");
   const denominator = completedTotal + failedTotal;
-  const successRate = denominator > 0 ? Math.round((completedTotal / denominator) * 1000) / 10 : 100;
+  // 没有任何已完成/失败任务时，成功率没有统计意义，返回 0 而不是伪造 100%
+  const successRate = denominator > 0 ? Math.round((completedTotal / denominator) * 1000) / 10 : 0;
 
   return {
     todayTasks,
@@ -70,6 +71,27 @@ export function getOverview(db: DB): StatsOverview {
 export interface PlatformCount {
   platform: string;
   count: number;
+}
+
+export interface PlatformOption {
+  platform: string;
+  name: string;
+  count: number;
+}
+
+/** 任务出现过的全部平台（含自定义解析源），用于历史页的平台筛选 */
+export function getPlatformOptions(db: DB): PlatformOption[] {
+  const rows = db
+    .prepare(
+      `SELECT platform, MAX(platform_name) AS name, COUNT(*) AS c
+       FROM tasks GROUP BY platform ORDER BY c DESC, platform ASC`,
+    )
+    .all() as RawRow[];
+  return rows.map((r) => ({
+    platform: String(r.platform),
+    name: String(r.name || r.platform),
+    count: Number(r.c),
+  }));
 }
 
 export function getPlatformCounts(db: DB): PlatformCount[] {
@@ -94,7 +116,8 @@ export function getDaily(db: DB, days = 14): DailyStat[] {
   for (let i = days - 1; i >= 0; i--) {
     const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
     const start = day.getTime();
-    const end = day.getTime() + 86400000;
+    // 用日历日 + 1 天计算结束时间，避免夏令时切换日多算/少算一小时
+    const end = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1).getTime();
     const count = one(
       db,
       "SELECT COUNT(*) AS c FROM tasks WHERE status = 'completed' AND completed_at >= ? AND completed_at < ?",

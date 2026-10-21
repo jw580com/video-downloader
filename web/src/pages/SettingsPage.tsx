@@ -4,6 +4,7 @@ import {
   Database,
   Download,
   Gauge,
+  Globe,
   HardDrive,
   Monitor,
   Moon,
@@ -23,9 +24,10 @@ import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Input, Select } from '../components/ui/Field';
 import { ParsersCard } from '../components/ParsersCard';
+import { useSettings } from '../hooks/useSettings';
 
 export default function SettingsPage() {
-  const { settings, loading, save } = useGlobalSettings();
+  const { settings, loading, error: settingsError, save, reload } = useSettings();
   const { mode, setMode } = useTheme();
   const toast = useToast();
   const [form, setForm] = useState<Settings | null>(null);
@@ -71,6 +73,7 @@ export default function SettingsPage() {
         timeoutSec: form.timeoutSec,
         autoRetries: form.autoRetries,
         cookiesFile: form.cookiesFile,
+        proxyUrl: form.proxyUrl,
       });
       setForm(saved);
       setDirty(false);
@@ -96,11 +99,20 @@ export default function SettingsPage() {
       </div>
 
       {!form || loading ? (
-        <div className="space-y-5">
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="h-44 animate-pulse rounded-2xl bg-slate-100 dark:bg-slate-900" />
-          ))}
-        </div>
+        settingsError && !loading ? (
+          <Card>
+            <p className="text-sm text-rose-500">读取设置失败：{settingsError}</p>
+            <Button size="sm" className="mt-3" onClick={() => void reload()}>
+              重试
+            </Button>
+          </Card>
+        ) : (
+          <div className="space-y-5">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-44 animate-pulse rounded-2xl bg-slate-100 dark:bg-slate-900" />
+            ))}
+          </div>
+        )
       ) : (
         <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
           {/* 下载设置 */}
@@ -144,7 +156,7 @@ export default function SettingsPage() {
                   value={form.downloadDir}
                   onChange={(e) => patch('downloadDir', e.target.value)}
                   leading={<Download className="h-4 w-4" />}
-                  hint="相对路径相对于项目根目录解析；修改后新任务使用该目录"
+                  hint="相对路径相对于项目根目录解析；保存时会自动创建并校验目录可写，修改后新任务使用该目录"
                 />
               </div>
             </div>
@@ -187,6 +199,16 @@ export default function SettingsPage() {
                 leading={<RefreshCw className="h-4 w-4" />}
                 hint="失败后自动重试 0~10 次"
               />
+              <div className="sm:col-span-3">
+                <Input
+                  label="代理服务器（可选）"
+                  value={form.proxyUrl}
+                  onChange={(e) => patch('proxyUrl', e.target.value)}
+                  leading={<Globe className="h-4 w-4" />}
+                  placeholder="http://127.0.0.1:10020"
+                  hint="支持 http://、https://、socks5:// 代理，例如 http://127.0.0.1:10020；留空表示直连。本机与局域网地址会自动直连。修改后对之后发起的解析与下载生效。"
+                />
+              </div>
               <div className="sm:col-span-3">
                 <Input
                   label="Cookie 文件路径（可选）"
@@ -307,28 +329,4 @@ export default function SettingsPage() {
       )}
     </div>
   );
-}
-
-function useGlobalSettings() {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .getSettings()
-      .then((r) => {
-        if (!cancelled) setSettings(r.settings);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return {
-    settings,
-    loading,
-    save: async (partial: Partial<Settings>) => (await api.updateSettings(partial)).settings,
-  };
 }

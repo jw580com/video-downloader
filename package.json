@@ -20,6 +20,7 @@
     "typecheck": "npm --workspace @vdm/server run typecheck && npm --workspace @vdm/web run typecheck",
     "media-server": "node scripts/media-server.mjs",
     "test:smoke": "node scripts/smoke.mjs",
+    "test:regression": "node scripts/regression.mjs",
     "test:batch-delete": "node scripts/batch-delete-test.mjs",
     "test:parsers": "node scripts/parsers-test.mjs",
     "test:e2e": "node scripts/e2e.mjs",

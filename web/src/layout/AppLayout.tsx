@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { BarChart3, Download, History, Home, Moon, Settings, Sun } from 'lucide-react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
@@ -43,6 +44,23 @@ function ThemeToggle() {
 
 export default function AppLayout() {
   const location = useLocation();
+  const [version, setVersion] = useState('1.0.0');
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/health')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { version?: string } | null) => {
+        if (!cancelled && data?.version) setVersion(data.version);
+      })
+      .catch(() => {
+        // 服务不可用时保留占位版本号
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const current =
     NAV.find((n) => (n.end ? location.pathname === n.to : location.pathname.startsWith(n.to))) ?? NAV[0];
 
@@ -68,14 +86,14 @@ export default function AppLayout() {
                     : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200'
                 }`}
               >
-                <Icon className="h-4.5 w-4.5 h-[18px] w-[18px]" />
+                <Icon className="h-[18px] w-[18px]" />
                 {item.label}
               </NavLink>
             );
           })}
         </nav>
         <div className="mt-4 flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-800 dark:bg-slate-950/50">
-          <span className="text-xs text-slate-400">v1.0.0</span>
+          <span className="text-xs text-slate-400">v{version}</span>
           <ThemeToggle />
         </div>
       </aside>

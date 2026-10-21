@@ -200,7 +200,12 @@ async function main() {
         () => {
           const t = document.body.innerText;
           return (
-            t.includes('平台不支持') || t.includes('无法识别') || t.includes('网络') || t.includes('超时')
+            t.includes('平台不支持') ||
+            t.includes('无法识别') ||
+            t.includes('网络') ||
+            t.includes('无法连接') ||
+            t.includes('代理') ||
+            t.includes('超时')
           );
         },
         { timeout: 45000 },
@@ -593,17 +598,20 @@ async function main() {
       await clickButtonByText('添加解析源');
       await waitForText('保存解析源', 8000);
       const scriptPath = path.resolve('scripts/fixtures/fake-parser.mjs');
-      await page.type('[data-testid="parser-name"]', PARSER_NAME);
-      await page.type('[data-testid="parser-domains"]', PARSER_DOMAIN);
+      await page.type('[data-testid="parser-name"]', PARSER_NAME, { delay: 10 });
+      await page.type('[data-testid="parser-domains"]', PARSER_DOMAIN, { delay: 10 });
       await page.select('[data-testid="parser-type"]', 'script');
-      await page.type('[data-testid="parser-script"]', `node ${scriptPath} {url}`);
+      await page.type('[data-testid="parser-script"]', `node ${scriptPath} {url}`, { delay: 5 });
       await clickButtonByText('保存解析源');
       await waitForText('解析源已添加', 8000);
       await page.goto(APP_BASE + '/', { waitUntil: 'domcontentloaded' });
       await parseUrl(`https://${PARSER_DOMAIN}/video/999`);
       await waitForPreview();
-      const t = await page.evaluate(() => document.body.innerText);
-      assert(t.includes(PARSER_NAME), '预览卡片未显示自定义解析源名称');
+      await page.waitForFunction(
+        (name) => document.body.innerText.includes(name),
+        { timeout: 15000 },
+        PARSER_NAME,
+      );
       await shot('19-custom-parser-preview');
       await page.click('[data-testid="add-btn"]');
       await page.waitForFunction(() => location.pathname === '/tasks', { timeout: 15000 });

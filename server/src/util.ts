@@ -15,15 +15,19 @@ export function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
 
-/** 去除文件名中的非法字符，限制长度 */
+/** 去除文件名中的非法字符，限制长度，并规避 Windows 保留设备名 */
 export function safeFileName(name: string, fallback = 'video'): string {
   const cleaned = name
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/[. ]+$/g, '')
     .trim();
-  const limited = cleaned.slice(0, 120).trim();
-  return limited || fallback;
+  let limited = cleaned.slice(0, 120).replace(/[. ]+$/g, '').trim() || fallback;
+  const stem = limited.split('.')[0]!.toUpperCase();
+  if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(stem)) {
+    limited = `_${limited}`;
+  }
+  return limited;
 }
 
 /** 确保目录存在且可写 */
@@ -42,7 +46,7 @@ export function ensureDir(dir: string): void {
 export function freeDiskBytes(dir: string): number | null {
   try {
     const s = fs.statfsSync(dir);
-    if (typeof s.bavail === 'number' && typeof s.bsize === 'number' && s.bavail > 0) {
+    if (typeof s.bavail === 'number' && typeof s.bsize === 'number' && s.bavail >= 0) {
       return s.bavail * s.bsize;
     }
   } catch {
@@ -66,11 +70,27 @@ export function formatBytes(n: number): string {
   return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
 }
 
+/** 读取文件末尾若干字节（只读取所需部分，避免把超大日志整个读入内存） */
 export function tailOfFile(file: string, bytes = 4096): string {
+  let fd: number | undefined;
   try {
-    const buf = fs.readFileSync(file);
-    return buf.subarray(Math.max(0, buf.length - bytes)).toString('utf8');
+    const size = fs.statSync(file).size;
+    if (size <= 0) return '';
+    const start = Math.max(0, size - bytes);
+    const length = size - start;
+    const buf = Buffer.alloc(length);
+    fd = fs.openSync(file, 'r');
+    const read = fs.readSync(fd, buf, 0, length, start);
+    return buf.subarray(0, read).toString('utf8');
   } catch {
     return '';
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
   }
 }

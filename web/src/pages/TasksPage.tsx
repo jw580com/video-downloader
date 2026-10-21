@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Download, ListTodo, RefreshCw, Trash2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Download, ListTodo, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useTasks } from '../hooks/useTasks';
 import { api } from '../lib/api';
@@ -9,12 +9,15 @@ import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Modal } from '../components/ui/Modal';
+import { Pagination } from '../components/Pagination';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { StatusBadge } from '../components/StatusBadge';
 import { PlatformBadge } from '../components/PlatformBadge';
 import { TaskActions } from '../components/TaskActions';
 import { BatchDeleteBar } from '../components/BatchDeleteBar';
 import { useToast } from '../context/ToastContext';
+
+const PAGE_SIZE = 50;
 
 const FILTERS: Array<{ value: string; label: string }> = [
   { value: '', label: '全部' },
@@ -69,6 +72,11 @@ function ProgressCell({ task }: { task: Task }) {
       {task.status === 'paused' && task.downloadedBytes > 0 ? (
         <p className="mt-1 text-[11px] text-amber-500">已下载 {formatBytes(task.downloadedBytes)}，可继续下载</p>
       ) : null}
+      {task.status === 'waiting' && task.errorMessage ? (
+        <p className="mt-1 truncate text-[11px] text-amber-500" title={task.errorMessage}>
+          {task.errorMessage}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -87,8 +95,18 @@ function SelectCheckbox({ checked, onChange, label }: { checked: boolean; onChan
 
 export default function TasksPage() {
   const [filter, setFilter] = useState('');
+  const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
+  const [page, setPage] = useState(0);
   const { tasks, total, loading, error, refresh } = useTasks(
-    { status: filter || undefined, sort: 'created_at', order: 'desc', limit: 200 },
+    {
+      status: filter || undefined,
+      search: debounced || undefined,
+      sort: 'created_at',
+      order: 'desc',
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+    },
     1200,
   );
   const navigate = useNavigate();
@@ -99,6 +117,24 @@ export default function TasksPage() {
   const [deleteAllOpen, setDeleteAllOpen] = useState(false);
   const [withFiles, setWithFiles] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const next = search.trim();
+    // 初始挂载（值未变化）时不要重置页码，避免刚翻页就被复位
+    if (next === debounced) return;
+    const timer = window.setTimeout(() => {
+      setDebounced(next);
+      setPage(0);
+      setSelected(new Set());
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [search, debounced]);
+
+  // 任务被删除/筛选后当前页可能越界，自动回到最后一页
+  useEffect(() => {
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    if (page > pages - 1) setPage(pages - 1);
+  }, [total, page]);
 
   const allSelected = tasks.length > 0 && tasks.every((t) => selected.has(t.id));
 
@@ -122,7 +158,11 @@ export default function TasksPage() {
       const r = await api.batchDelete([...selected], withFiles);
       toast.success(
         `已删除 ${r.deleted} 个任务`,
-        r.filesDeleted > 0 ? `同时删除了 ${r.filesDeleted} 个文件` : '已下载文件已保留',
+        r.failed > 0
+          ? `${r.failed} 个任务删除失败，请重试`
+          : r.filesDeleted > 0
+            ? `同时删除了 ${r.filesDeleted} 个文件`
+            : '已下载文件已保留',
       );
       setSelected(new Set());
       setBatchOpen(false);
@@ -138,10 +178,14 @@ export default function TasksPage() {
     if (busy) return;
     setBusy(true);
     try {
-      const r = await api.deleteAll({ withFiles, status: filter || undefined });
+      const r = await api.deleteAll({ withFiles, status: filter || undefined, search: debounced || undefined });
       toast.success(
         `已删除 ${r.deleted} 个任务`,
-        r.filesDeleted > 0 ? `同时删除了 ${r.filesDeleted} 个文件` : '已下载文件已保留',
+        r.failed > 0
+          ? `${r.failed} 个任务删除失败，请重试`
+          : r.filesDeleted > 0
+            ? `同时删除了 ${r.filesDeleted} 个文件`
+            : '已下载文件已保留',
       );
       setSelected(new Set());
       setDeleteAllOpen(false);
@@ -161,7 +205,7 @@ export default function TasksPage() {
         <div>
           <h2 className="text-lg font-bold text-slate-900 dark:text-white">下载任务</h2>
           <p className="mt-0.5 text-xs text-slate-400">
-            共 {total} 个任务{activeCount > 0 ? ` · ${activeCount} 个未完成` : ''}
+            共 {total} 个任务{activeCount > 0 ? ` · 本页 ${activeCount} 个未完成` : ''}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -184,27 +228,41 @@ export default function TasksPage() {
         </div>
       </div>
 
-      <div className="mb-4 flex flex-wrap gap-1.5">
-        {FILTERS.map((f) => {
-          const isActive = filter === f.value;
-          return (
-            <button
-              key={f.value}
-              type="button"
-              onClick={() => {
-                setFilter(f.value);
-                setSelected(new Set());
-              }}
-              className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                isActive
-                  ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/30'
-                  : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800'
-              }`}
-            >
-              {f.label}
-            </button>
-          );
-        })}
+      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap gap-1.5">
+          {FILTERS.map((f) => {
+            const isActive = filter === f.value;
+            return (
+              <button
+                key={f.value}
+                type="button"
+                onClick={() => {
+                  setFilter(f.value);
+                  setPage(0);
+                  setSelected(new Set());
+                }}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                  isActive
+                    ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/30'
+                    : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800'
+                }`}
+              >
+                {f.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="relative sm:w-64">
+          <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-400">
+            <Search className="h-4 w-4" />
+          </span>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜索标题 / 链接 / 作者…"
+            className="h-9 w-full rounded-lg border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500"
+          />
+        </div>
       </div>
 
       {selected.size > 0 ? (
@@ -336,6 +394,17 @@ export default function TasksPage() {
           </Card>
         ))}
       </div>
+
+      <Pagination
+        page={page}
+        pageSize={PAGE_SIZE}
+        total={total}
+        unit="个任务"
+        onChange={(next) => {
+          setPage(next);
+          setSelected(new Set());
+        }}
+      />
 
       {/* 批量删除确认 */}
       <Modal

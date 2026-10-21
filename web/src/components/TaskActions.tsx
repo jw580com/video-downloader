@@ -1,7 +1,6 @@
 import { useState, useCallback, type ReactNode } from 'react';
 import {
   AlertTriangle,
-  Clock,
   Copy,
   FolderOpen,
   Pause,
@@ -19,10 +18,9 @@ import { useToast } from '../context/ToastContext';
 interface TaskActionsProps {
   task: Task;
   onChanged: () => void;
-  size?: 'sm' | 'md';
 }
 
-export function TaskActions({ task, onChanged, size = 'sm' }: TaskActionsProps) {
+export function TaskActions({ task, onChanged }: TaskActionsProps) {
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -99,7 +97,7 @@ export function TaskActions({ task, onChanged, size = 'sm' }: TaskActionsProps) 
     </button>
   );
 
-  const active = ['downloading', 'parsing'].includes(task.status);
+  const active = ['waiting', 'downloading', 'parsing'].includes(task.status);
 
   return (
     <div className="flex items-center justify-end gap-1.5">
@@ -217,12 +215,6 @@ export function TaskActions({ task, onChanged, size = 'sm' }: TaskActionsProps) 
           将删除视频文件，但保留历史记录。确定继续吗？
         </p>
       </Modal>
-
-      {size === 'sm' ? null : (
-        <span className="flex items-center gap-1 text-xs text-slate-400">
-          <Clock className="h-3 w-3" />
-        </span>
-      )}
     </div>
   );
 }

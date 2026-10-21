@@ -10,6 +10,7 @@ export type ErrorCode =
   | 'WRITE_ERROR'
   | 'YTDLP_MISSING'
   | 'BAD_REQUEST'
+  | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'INTERNAL'
   | 'NOT_MEDIA';
@@ -26,6 +27,7 @@ const MESSAGES: Record<ErrorCode, string> = {
   WRITE_ERROR: '文件写入失败',
   YTDLP_MISSING: '该平台需要 yt-dlp 支持，请先安装 yt-dlp',
   BAD_REQUEST: '请求参数有误',
+  FORBIDDEN: '跨站请求被拒绝',
   NOT_FOUND: '资源不存在',
   INTERNAL: '服务内部错误',
   NOT_MEDIA: '该链接不是可直接下载的媒体文件',
@@ -46,6 +48,7 @@ const STATUS_BY_CODE: Partial<Record<ErrorCode, number>> = {
   INTERNAL: 500,
   YTDLP_MISSING: 501,
   BAD_REQUEST: 400,
+  FORBIDDEN: 403,
   INVALID_URL: 400,
   UNSUPPORTED_PLATFORM: 400,
   VIDEO_UNAVAILABLE: 422,

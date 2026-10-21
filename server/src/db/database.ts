@@ -69,6 +69,7 @@ export function openDatabase(): DB {
   const db = new DatabaseSync(config.dbPath);
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA synchronous = NORMAL;');
+  db.exec('PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA);
   // 旧数据库迁移：为 tasks 表补充新增列
   ensureColumn(db, 'tasks', 'resolved_url', "resolved_url TEXT NOT NULL DEFAULT ''");

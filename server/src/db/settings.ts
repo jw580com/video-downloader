@@ -1,6 +1,8 @@
 import type { DB } from './database.js';
 import { config } from '../config.js';
 import { AppError } from '../errors.js';
+import { resolveFolder } from '../util.js';
+import { isValidProxyUrl, normalizeProxyUrl } from '../services/proxy.js';
 
 export interface Settings {
   downloadQuality: string;
@@ -11,6 +13,7 @@ export interface Settings {
   timeoutSec: number;
   autoRetries: number;
   cookiesFile: string;
+  proxyUrl: string;
 }
 
 export const CONCURRENCY_OPTIONS = [1, 2, 3, 5, 10] as const;
@@ -29,6 +32,9 @@ const DEFAULTS: Settings = {
   timeoutSec: 60,
   autoRetries: 2,
   cookiesFile: '',
+  proxyUrl: normalizeProxyUrl(
+    process.env.PROXY_URL || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || '',
+  ),
 };
 
 export function getSettings(db: DB): Settings {
@@ -89,14 +95,35 @@ export function validateSettings(partial: Partial<Settings>): void {
   if (partial.cookiesFile !== undefined && typeof partial.cookiesFile !== 'string') {
     throw new AppError('BAD_REQUEST', 'Cookie 文件路径无效');
   }
+  if (partial.proxyUrl !== undefined && !isValidProxyUrl(partial.proxyUrl)) {
+    throw new AppError(
+      'BAD_REQUEST',
+      '代理地址无效，格式如 http://127.0.0.1:10020、socks5://127.0.0.1:1080',
+    );
+  }
 }
 
 export function updateSettings(db: DB, partial: Partial<Settings>): Settings {
-  validateSettings(partial);
+  const next: Partial<Settings> = { ...partial };
+  // 保存目录必须真实存在且可写，避免把不可用目录写入设置后每个新任务都失败
+  if (next.downloadDir !== undefined) {
+    try {
+      next.downloadDir = resolveFolder(next.downloadDir);
+    } catch {
+      throw new AppError('BAD_REQUEST', `保存目录不可用或不可写：${next.downloadDir}`);
+    }
+  }
+  if (next.proxyUrl !== undefined) {
+    next.proxyUrl = normalizeProxyUrl(next.proxyUrl);
+    if (String(partial.proxyUrl ?? '').trim() !== '' && next.proxyUrl === '') {
+      throw new AppError('BAD_REQUEST', '代理地址无效');
+    }
+  }
+  validateSettings(next);
   const upsert = db.prepare(
     'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
   );
-  for (const [k, v] of Object.entries(partial)) {
+  for (const [k, v] of Object.entries(next)) {
     if (v === undefined) continue;
     upsert.run(k, JSON.stringify(v));
   }

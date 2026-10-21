@@ -1,4 +1,4 @@
-import { ApiError, type AllStats, type Parser, type ParserInput, type Settings, type SystemInfo, type Task, type VideoInfo } from './types';
+import { ApiError, type AllStats, type Parser, type ParserInput, type PlatformOption, type Settings, type SystemInfo, type Task, type VideoInfo } from './types';
 
 const BASE = '/api';
 
@@ -87,7 +87,7 @@ export const api = {
   batchDelete(
     ids: string[],
     withFiles: boolean,
-  ): Promise<{ ok: boolean; deleted: number; filesDeleted: number }> {
+  ): Promise<{ ok: boolean; deleted: number; filesDeleted: number; failed: number }> {
     return request('/tasks/batch-delete', {
       method: 'POST',
       body: JSON.stringify({ ids, withFiles }),
@@ -98,7 +98,7 @@ export const api = {
     status?: string;
     platform?: string;
     search?: string;
-  }): Promise<{ ok: boolean; deleted: number; filesDeleted: number }> {
+  }): Promise<{ ok: boolean; deleted: number; filesDeleted: number; failed: number }> {
     return request('/tasks/delete-all', { method: 'POST', body: JSON.stringify(opts) });
   },
   deleteFile(id: string): Promise<{ ok: boolean }> {
@@ -115,6 +115,9 @@ export const api = {
   },
   getStats(): Promise<AllStats> {
     return request('/stats');
+  },
+  getPlatforms(): Promise<{ platforms: PlatformOption[] }> {
+    return request('/platforms');
   },
   getSystem(): Promise<SystemInfo> {
     return request('/system');

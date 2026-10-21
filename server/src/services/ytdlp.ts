@@ -32,6 +32,9 @@ export interface YtDlpInfo {
 }
 
 let cachedRunner: YtdlpRunner | null | undefined;
+let cachedRunnerAt = 0;
+/** 未找到 yt-dlp 时的缓存有效期：允许用户安装后无需重启服务即可生效 */
+const MISSING_CACHE_MS = 30_000;
 
 export interface YtdlpRunner {
   cmd: string;
@@ -68,7 +71,11 @@ export function ytdlpEnv(): NodeJS.ProcessEnv {
  * 4. PATH 中的 yt-dlp
  */
 export function findYtdlp(): YtdlpRunner | null {
-  if (cachedRunner !== undefined) return cachedRunner;
+  if (cachedRunner !== undefined) {
+    if (cachedRunner !== null) return cachedRunner;
+    // 未安装的情况只缓存一小段时间，安装后无需重启服务
+    if (Date.now() - cachedRunnerAt < MISSING_CACHE_MS) return null;
+  }
   const pyCandidates: string[] = [];
   if (fs.existsSync(config.ytdlpModuleDir)) {
     pyCandidates.push(config.pythonPath, 'python', 'python3');
@@ -88,6 +95,7 @@ export function findYtdlp(): YtdlpRunner | null {
       if (r.status === 0) {
         log.info(`使用 yt-dlp：${py} -m yt_dlp`);
         cachedRunner = { cmd: py, argsPrefix: ['-m', 'yt_dlp'], label: 'python-module' };
+        cachedRunnerAt = Date.now();
         return cachedRunner;
       }
     } catch {
@@ -109,6 +117,7 @@ export function findYtdlp(): YtdlpRunner | null {
       if (r.status === 0) {
         log.info(`使用 yt-dlp：${c}`);
         cachedRunner = { cmd: c, argsPrefix: [], label: 'binary' };
+        cachedRunnerAt = Date.now();
         return cachedRunner;
       }
     } catch {
@@ -119,20 +128,24 @@ export function findYtdlp(): YtdlpRunner | null {
     const r = spawnSync('yt-dlp', ['--version'], { stdio: 'ignore', windowsHide: true });
     if (r.status === 0) {
       cachedRunner = { cmd: 'yt-dlp', argsPrefix: [], label: 'path' };
+      cachedRunnerAt = Date.now();
       return cachedRunner;
     }
   } catch {
     // ignore
   }
   cachedRunner = null;
+  cachedRunnerAt = Date.now();
   return null;
 }
 
 let cachedFfmpeg: boolean | undefined;
+let cachedFfmpegAt = 0;
 
 /** 检测 ffmpeg 是否可用（存在且能实际运行；用于合并音视频 / mp3 转码） */
 export function hasFfmpeg(): boolean {
-  if (cachedFfmpeg !== undefined) return cachedFfmpeg;
+  if (cachedFfmpeg === true) return true;
+  if (cachedFfmpeg === false && Date.now() - cachedFfmpegAt < MISSING_CACHE_MS) return false;
   const candidates: string[] = [];
   try {
     if (fs.existsSync(config.ffmpegPath) && fs.statSync(config.ffmpegPath).isFile()) {
@@ -147,6 +160,7 @@ export function hasFfmpeg(): boolean {
       const r = spawnSync(c, ['-version'], { stdio: 'ignore', windowsHide: true });
       if (r.status === 0) {
         cachedFfmpeg = true;
+        cachedFfmpegAt = Date.now();
         return true;
       }
     } catch {
@@ -154,6 +168,7 @@ export function hasFfmpeg(): boolean {
     }
   }
   cachedFfmpeg = false;
+  cachedFfmpegAt = Date.now();
   return false;
 }
 
@@ -176,6 +191,12 @@ export function mapYtdlpError(tail: string): AppError {
   if (/timed out|read timed out|etimedout/i.test(t)) return new AppError('TIMEOUT');
   if (/no space left|not enough space|disk full|enospc/i.test(t)) return new AppError('DISK_FULL');
   if (/permission denied|eacces/i.test(t)) return new AppError('WRITE_ERROR');
+  if (/http error 429|too many requests|rate.?limit/i.test(t)) {
+    return new AppError('VIDEO_UNAVAILABLE', '请求过于频繁（HTTP 429），请稍后重试');
+  }
+  if (/http error 403|forbidden/i.test(t)) {
+    return new AppError('AUTH_REQUIRED', '该视频需要登录或存在访问控制，无法下载（HTTP 403）');
+  }
   if (/unable to download|network|connection|getaddrinfo|econn|dns/i.test(t)) {
     return new AppError('NETWORK_ERROR');
   }
@@ -204,6 +225,7 @@ export async function runYtdlpJson(
   cookiesFile = '',
   extraArgs = '',
   headersJson = '',
+  proxyUrl = '',
 ): Promise<YtDlpInfo> {
   const runner = findYtdlp();
   if (!runner) throw new AppError('YTDLP_MISSING');
@@ -224,6 +246,7 @@ export async function runYtdlpJson(
       '--retries',
       '1',
     ];
+    if (proxyUrl) args.push('--proxy', proxyUrl);
     if (cookiesFile && fs.existsSync(cookiesFile)) args.push('--cookies', cookiesFile);
     if (extraArgs) {
       for (const line of extraArgs.split(/\r?\n/)) {

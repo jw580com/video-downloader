@@ -14,7 +14,7 @@ export function useTasks(params: TaskListParams = {}, intervalMs = 1500): {
   const key = JSON.stringify(params);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const fn = useMemo(() => () => api.listTasks(params), [key]);
-  const { data, loading, error, refresh } = usePolling(fn, intervalMs);
+  const { data, loading, error, refresh } = usePolling(fn, intervalMs, true, key);
   const tasks = data?.items ?? [];
   const hasActive = tasks.some((t) =>
     (['waiting', 'parsing', 'downloading'] as TaskStatus[]).includes(t.status),

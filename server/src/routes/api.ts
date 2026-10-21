@@ -5,8 +5,9 @@ import { spawn } from 'node:child_process';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import type { DB } from '../db/database.js';
 import { getSettings, updateSettings, type Settings } from '../db/settings.js';
-import { getAllStats } from '../db/stats.js';
+import { getAllStats, getPlatformOptions } from '../db/stats.js';
 import {
+  ALL_STATUSES,
   createTask,
   deleteTask,
   getTask,
@@ -120,17 +121,57 @@ function openInFileManager(filePath: string): { ok: boolean; message: string } {
   }
 }
 
-/** 删除一个任务（运行中的先取消；withFiles 时同时删除已下载文件） */
-function removeTaskRecord(
+/** 质量/格式白名单校验：避免任意字符串进入文件名或 yt-dlp 选择器 */
+function normalizeTaskOptions(rawQuality: unknown, rawFormat: unknown, fallbackQuality: string, fallbackFormat: string): { quality: string; format: string } {
+  const quality = typeof rawQuality === 'string' && rawQuality.trim() ? rawQuality.trim() : fallbackQuality;
+  if (!/^(best|original|\d{3,4})$/.test(quality)) {
+    throw new AppError('BAD_REQUEST', '视频质量参数无效');
+  }
+  if (/^\d{3,4}$/.test(quality) && (Number(quality) < 144 || Number(quality) > 4320)) {
+    throw new AppError('BAD_REQUEST', '视频质量参数超出范围');
+  }
+  const format = (typeof rawFormat === 'string' && rawFormat.trim() ? rawFormat.trim() : fallbackFormat).toLowerCase();
+  // 仅允许安全扩展名，杜绝通过 format 注入路径分隔符（路径穿越）
+  if (!/^[a-z0-9]{1,10}$/.test(format)) {
+    throw new AppError('BAD_REQUEST', '文件格式参数无效');
+  }
+  return { quality, format };
+}
+
+/** 清洗客户端传入的 formatId，避免其进入 yt-dlp 输出文件名时破坏路径 */
+function sanitizeFormatId(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw.replace(/[^\w.-]+/g, '_').slice(0, 60);
+}
+
+function normalizeResolvedUrl(raw: unknown): string {
+  if (typeof raw !== 'string' || !raw.trim()) return '';
+  const value = raw.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new AppError('BAD_REQUEST', '解析出的下载地址无效');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new AppError('BAD_REQUEST', '下载地址必须是 http(s) 链接');
+  }
+  return value.slice(0, 4096);
+}
+
+/** 删除一个任务（运行中的先取消并等待退出；withFiles 时同时删除已下载文件） */
+async function removeTaskRecord(
   deps: RouterDeps,
   id: string,
   withFiles: boolean,
-): { removed: boolean; fileDeleted: boolean } {
+): Promise<{ removed: boolean; fileDeleted: boolean; error?: string }> {
   const { db, queue } = deps;
   const task = getTask(db, id);
   if (!task) return { removed: false, fileDeleted: false };
-  queue.cancel(id); // 运行/等待中的任务先取消（清理 .part 文件）
+  // 先取消并等待任务真正退出，避免删除记录后引擎仍在写文件/更新数据库
+  await queue.cancelAndWait(id);
   let fileDeleted = false;
+  const remaining = getTask(db, id);
   if (withFiles && task.filePath) {
     try {
       if (fs.existsSync(task.filePath)) {
@@ -140,12 +181,20 @@ function removeTaskRecord(
       const part = `${task.filePath}.part`;
       if (fs.existsSync(part)) fs.unlinkSync(part);
     } catch {
-      throw new AppError('WRITE_ERROR', `删除文件失败：${task.filePath}`);
+      return {
+        removed: false,
+        fileDeleted,
+        error: `删除文件失败：${task.filePath}`,
+      };
     }
   }
+  // 无论是否删除正片，都清理临时文件与任务日志，避免留下孤儿文件
+  if (remaining) queue.cleanupTaskFiles(remaining);
+  queue.cleanupTaskLog(id);
   deleteTask(db, id);
   return { removed: true, fileDeleted };
 }
+
 
 export function createApiRouter(deps: RouterDeps): Router {
   const { db, queue, getSettingsFn, refreshSettings } = deps;
@@ -165,7 +214,8 @@ export function createApiRouter(deps: RouterDeps): Router {
     '/parse',
     wrap(async (req, res) => {
       const url = (req.body as { url?: unknown })?.url;
-      const info: VideoInfo = await parseVideo(db, url, getSettingsFn().cookiesFile);
+      const settings = getSettingsFn();
+      const info: VideoInfo = await parseVideo(db, url, settings.cookiesFile, settings.proxyUrl);
       res.json({ info });
     }),
   );
@@ -179,7 +229,7 @@ export function createApiRouter(deps: RouterDeps): Router {
         ? String(q.status)
             .split(',')
             .map((s) => s.trim())
-            .filter(Boolean)
+            .filter((s): s is TaskStatus => (ALL_STATUSES as string[]).includes(s))
         : undefined;
       const result = listTasks(db, {
         statuses: statuses as TaskStatus[] | undefined,
@@ -210,13 +260,25 @@ export function createApiRouter(deps: RouterDeps): Router {
       const url = normalizeUrl(body.url).href;
       const platform = detectPlatform(new URL(url));
       const settings = getSettingsFn();
-      const quality = typeof body.quality === 'string' && body.quality ? body.quality : settings.downloadQuality;
-      const format = typeof body.format === 'string' && body.format ? body.format : settings.downloadFormat;
-      const folder = resolveFolder(
-        typeof body.folder === 'string' && body.folder.trim() !== '' ? body.folder : settings.downloadDir,
+      const { quality, format } = normalizeTaskOptions(
+        body.quality,
+        body.format,
+        settings.downloadQuality,
+        settings.downloadFormat,
       );
+      const folderInput =
+        typeof body.folder === 'string' && body.folder.trim() !== '' ? body.folder : settings.downloadDir;
+      let folder: string;
+      try {
+        folder = resolveFolder(folderInput);
+      } catch {
+        throw new AppError('BAD_REQUEST', `保存目录不可用或不可写：${folderInput}`);
+      }
+      const resolvedUrl = normalizeResolvedUrl(body.resolvedUrl);
       const engine: 'http' | 'ytdlp' =
-        body.engine === 'http' ? 'http' : platform === 'direct' ? 'http' : 'ytdlp';
+        body.engine === 'http' || platform === 'direct' || (body.engine !== 'ytdlp' && resolvedUrl !== '')
+          ? 'http'
+          : 'ytdlp';
       const id = randomUUID();
       const task = createTask(db, {
         id,
@@ -233,11 +295,11 @@ export function createApiRouter(deps: RouterDeps): Router {
         durationSec: clamp(Math.round(Number(body.durationSec) || 0), 0, 604800),
         quality,
         format,
-        formatId: typeof body.formatId === 'string' ? body.formatId.slice(0, 200) : '',
+        formatId: sanitizeFormatId(body.formatId),
         engine,
         totalBytes: clamp(Math.round(Number(body.totalBytes) || 0), 0, Number.MAX_SAFE_INTEGER),
         folder,
-        resolvedUrl: typeof body.resolvedUrl === 'string' ? body.resolvedUrl.slice(0, 4096) : '',
+        resolvedUrl,
         headers:
           body.headers && typeof body.headers === 'object'
             ? JSON.stringify(body.headers).slice(0, 4000)
@@ -307,8 +369,15 @@ export function createApiRouter(deps: RouterDeps): Router {
     wrap(async (req, res) => {
       const task = getTask(db, req.params.id);
       if (!task) throw new AppError('NOT_FOUND', '任务不存在');
-      const { fileDeleted } = removeTaskRecord(deps, req.params.id, String(req.query.file ?? '') === '1');
-      res.json({ ok: true, fileDeleted });
+      const result = await removeTaskRecord(
+        deps,
+        req.params.id,
+        String(req.query.file ?? '') === '1',
+      );
+      if (!result.removed) {
+        throw new AppError('WRITE_ERROR', result.error ?? '删除任务失败');
+      }
+      res.json({ ok: true, fileDeleted: result.fileDeleted });
     }),
   );
 
@@ -323,15 +392,18 @@ export function createApiRouter(deps: RouterDeps): Router {
       const withFiles = body.withFiles === true;
       let deleted = 0;
       let filesDeleted = 0;
+      let failed = 0;
       for (const rawId of body.ids) {
         if (typeof rawId !== 'string') continue;
-        const r = removeTaskRecord(deps, rawId, withFiles);
+        const r = await removeTaskRecord(deps, rawId, withFiles);
         if (r.removed) {
           deleted++;
           if (r.fileDeleted) filesDeleted++;
+        } else if (r.error) {
+          failed++;
         }
       }
-      res.json({ ok: true, deleted, filesDeleted });
+      res.json({ ok: failed === 0, deleted, filesDeleted, failed });
     }),
   );
 
@@ -347,7 +419,10 @@ export function createApiRouter(deps: RouterDeps): Router {
       };
       const statusParam = typeof body.status === 'string' ? body.status : '';
       const statuses = statusParam
-        ? (statusParam.split(',').map((s) => s.trim()).filter(Boolean) as TaskStatus[])
+        ? statusParam
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s): s is TaskStatus => (ALL_STATUSES as string[]).includes(s))
         : undefined;
       const ids = listTaskIds(db, {
         statuses,
@@ -357,14 +432,17 @@ export function createApiRouter(deps: RouterDeps): Router {
       const withFiles = body.withFiles === true;
       let deleted = 0;
       let filesDeleted = 0;
+      let failed = 0;
       for (const id of ids) {
-        const r = removeTaskRecord(deps, id, withFiles);
+        const r = await removeTaskRecord(deps, id, withFiles);
         if (r.removed) {
           deleted++;
           if (r.fileDeleted) filesDeleted++;
+        } else if (r.error) {
+          failed++;
         }
       }
-      res.json({ ok: true, deleted, filesDeleted });
+      res.json({ ok: failed === 0, deleted, filesDeleted, failed });
     }),
   );
 
@@ -375,17 +453,24 @@ export function createApiRouter(deps: RouterDeps): Router {
       const task = getTask(db, req.params.id);
       if (!task) throw new AppError('NOT_FOUND', '任务不存在');
       if (!task.filePath) throw new AppError('NOT_FOUND', '该任务没有已下载的文件');
+      let deleted = false;
       try {
-        if (!fs.existsSync(task.filePath)) {
-          clearFilePath(db, req.params.id);
-          throw new AppError('NOT_FOUND', '文件不存在或已被删除');
+        if (fs.existsSync(task.filePath)) {
+          fs.unlinkSync(task.filePath);
+          deleted = true;
         }
-        fs.unlinkSync(task.filePath);
-        clearFilePath(db, req.params.id);
+        const part = `${task.filePath}.part`;
+        if (fs.existsSync(part)) {
+          fs.unlinkSync(part);
+          deleted = true;
+        }
+        queue.cleanupTaskFiles(task);
       } catch (e) {
         if (e instanceof AppError) throw e;
         throw new AppError('WRITE_ERROR', '删除文件失败');
       }
+      clearFilePath(db, req.params.id);
+      if (!deleted) throw new AppError('NOT_FOUND', '文件不存在或已被删除');
       res.json({ ok: true });
     }),
   );
@@ -419,9 +504,10 @@ export function createApiRouter(deps: RouterDeps): Router {
   router.put(
     '/parsers/:id',
     wrap(async (req, res) => {
-      if (!getParser(db, req.params.id)) throw new AppError('NOT_FOUND', '解析源不存在');
+      const existing = getParser(db, req.params.id);
+      if (!existing) throw new AppError('NOT_FOUND', '解析源不存在');
       const body = (req.body ?? {}) as Record<string, unknown>;
-      const parser = updateParser(db, req.params.id, validateParserBody(body, null));
+      const parser = updateParser(db, req.params.id, validateParserBody(body, existing));
       res.json({ parser });
     }),
   );
@@ -454,6 +540,11 @@ export function createApiRouter(deps: RouterDeps): Router {
   // ---- 统计 ----
   router.get('/stats', (req, res) => {
     res.json(getAllStats(db));
+  });
+
+  // ---- 平台列表（历史页筛选，含自定义解析源） ----
+  router.get('/platforms', (req, res) => {
+    res.json({ platforms: getPlatformOptions(db) });
   });
 
   // ---- 系统信息 ----

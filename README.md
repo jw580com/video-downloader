@@ -9,16 +9,19 @@
 - **URL 解析**：自动识别 YouTube / Bilibili / Vimeo / X (Twitter) / TikTok / 抖音 (Douyin) / Instagram / 直链视频；验证 URL、获取标题/缩略图/作者/时长/可用画质与格式/文件大小
 - **通用平台直通**：未匹配内置平台的链接自动交给 yt-dlp 通用解析（覆盖 1900+ 站点：微博、快手、优酷、腾讯视频、爱奇艺、西瓜视频、Dailymotion、Reddit、Twitch、VK、SoundCloud 等）
 - **自定义解析源**：在「设置 → 解析源」为任意站点添加解析规则 —— yt-dlp 参数型（附加参数/Cookie/请求头）或自定义脚本型（脚本输出直链 JSON），内置平台优先
+- **代理支持**：HTTP(S) / SOCKS5 代理（设置页或 `PROXY_URL`），同时作用于 yt-dlp、直链下载与直链探测；本机与局域网地址自动直连
 - **下载任务**：完整状态机 `Waiting → Parsing → Downloading → Paused / Completed / Failed / Cancelled`；实时进度、速度、剩余时间
-- **任务控制**：暂停 / 继续（断点续传）/ 取消 / 重试 / 删除；删除任务记录与删除实体文件明确分离
+- **任务控制**：暂停 / 继续（断点续传）/ 取消 / 重试 / 删除；等待中与运行中的任务都可暂停，删除任务记录与删除实体文件明确分离，删除记录时自动清理 `.part` 临时文件与任务日志，启动时清理过期日志
 - **批量操作**：多选任务批量删除、一键删除全部（可限定当前筛选条件），均支持「仅删记录 / 同时删除文件」两种模式
 - **并发队列**：默认并发 3（可配置 1/2/3/5/10），超限任务进入等待，完成后自动启动下一个
-- **任务恢复**：服务重启后自动读取数据库，恢复 Waiting/Downloading 任务（HTTP Range / yt-dlp `.part` 断点续传），Completed 任务绝不重复下载
-- **失败处理**：中文清晰错误（网络连接中断 / 视频不存在 / URL 无效 / 磁盘空间不足 / 需要登录授权等），自动重试可配置
-- **下载历史**：搜索、按平台/状态筛选、时间排序、打开文件夹、删除文件/记录
-- **Dashboard**：今日任务、已完成、下载中、失败、累计下载量、累计任务、成功率、各平台分布、每日下载量图表
+- **任务恢复**：服务重启后自动读取数据库，恢复 Waiting/Downloading 任务（HTTP Range / yt-dlp `.part` 断点续传），Completed 任务绝不重复下载；续传以 `.part` 实际字节数为准，即使崩溃时数据库进度落后也不会损坏文件
+- **失败处理**：中文清晰错误（网络连接中断 / 视频不存在 / URL 无效 / 磁盘空间不足 / 需要登录授权等），可恢复错误按指数退避自动重试（0~10 次可配置），需要登录、视频不存在等不可恢复错误不再无意义重试
+- **任务列表**：搜索标题/链接/作者、按状态筛选、分页浏览；历史页额外支持平台/时间排序，任务很多时也不会只能看到前 200 条
+- **下载历史**：搜索、按平台/状态筛选、时间排序、分页、打开文件夹、删除文件/记录
+- **Dashboard**：今日任务、已完成、进行中、失败、累计下载量、累计任务、成功率、各平台分布、每日下载量图表
 - **设置**：默认画质/格式、并发数、保存目录、限速、超时、重试次数、浅色/深色/跟随系统、系统信息（版本/数据库/目录/磁盘）
 - **响应式**：桌面 Dashboard 布局 / 平板 / 手机（底部导航、卡片列表、无横向滚动）
+- **安全**：API 默认只接受同源与本机/局域网来源的写请求，阻止任意网页跨站调用本机下载服务；下载完整性校验（Content-Length / Content-Range）确保截断连接不会被标记为完成
 - **Docker**：多阶段构建，`docker compose up -d` 一键启动
 
 ## 技术栈
@@ -67,11 +70,16 @@ npm start
 | --- | --- | --- |
 | `PORT` | `3000` | 服务端口 |
 | `HOST` | `0.0.0.0` | 监听地址 |
-| `DATA_DIR` | `./data` | 数据目录（数据库、日志、临时文件） |
+| `DATA_DIR` | `./data` | 数据目录（日志、临时文件） |
+| `DB_PATH` | `./data/app.db` | SQLite 数据库路径 |
 | `DOWNLOAD_DIR` | `./downloads` | 默认下载目录 |
 | `YTDLP_PATH` | `./tools/yt-dlp(.exe)` | yt-dlp 可执行文件路径 |
 | `FFMPEG_PATH` | `./tools/ffmpeg(.exe)` | ffmpeg 路径（合并/MP3 需要） |
+| `PYTHON_PATH` | `python` / `python3` | 用于 `python -m yt_dlp` 的解释器 |
+| `YTDLP_MODULE_DIR` | `./tools/ytdlp` | yt-dlp Python 模块目录（`pip install --target`） |
 | `MAX_CONCURRENCY` | `3` | 启动时默认并发数（可在设置页修改） |
+| `PROXY_URL` | 空 | HTTP(S)/SOCKS 代理，如 `http://127.0.0.1:10020`；也可只写端口。在设置页可覆盖 |
+| `CORS_ORIGINS` | 空 | 额外允许跨源访问 API 的来源，逗号分隔；默认已允许同源、localhost、127.0.0.1 与局域网 IP |
 
 ## Docker 部署
 
@@ -104,7 +112,7 @@ docker compose up -d
 │       └── lib/             # 类型 / API 客户端 / 格式化 / 常量
 ├── scripts/                 # media-server / e2e / stress / recovery 测试
 ├── downloads/               # 默认下载目录
-├── data/                    # SQLite 数据库与日志
+├── data/                    # SQLite 数据库与 yt-dlp / 解析脚本日志
 ├── Dockerfile               # 多阶段构建
 └── docker-compose.yml
 ```
@@ -122,17 +130,17 @@ Base URL：`/api`（开发模式前端经 Vite 代理到 3000）
 | GET | `/tasks` | 列表，参数：`status`(逗号分隔) `platform` `search` `sort`(created_at/updated_at/completed_at/total_bytes) `order`(asc/desc) `limit` `offset` |
 | GET | `/tasks/:id` | 任务详情 |
 | POST | `/tasks/:id/pause` · `/resume` · `/cancel` · `/retry` | 任务控制 |
-| DELETE | `/tasks/:id?file=1` | 删除记录；`file=1` 时同时删除已下载文件 |
-| POST | `/tasks/batch-delete` | 批量删除 `{ids: string[], withFiles?: boolean}` → `{deleted, filesDeleted}` |
-| POST | `/tasks/delete-all` | 删除全部（可选筛选条件）`{withFiles?, status?, platform?, search?}` → `{deleted, filesDeleted}` |
-| POST | `/tasks/:id/delete-file` | 仅删除实体文件（保留历史记录） |
+| DELETE | `/tasks/:id?file=1` | 删除记录（同时清理 `.part`）；`file=1` 时同时删除已下载文件 |
+| POST | `/tasks/batch-delete` | 批量删除 `{ids: string[], withFiles?: boolean}` → `{deleted, filesDeleted, failed}` |
+| POST | `/tasks/delete-all` | 删除全部（可选筛选条件）`{withFiles?, status?, platform?, search?}` → `{deleted, filesDeleted, failed}` |
+| POST | `/tasks/:id/delete-file` | 仅删除实体文件（含 `.part`，保留历史记录） |
 | POST | `/tasks/:id/open-folder` | 在文件管理器中定位文件 |
 
 ### 设置 / 统计 / 系统
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET/PUT | `/settings` | 读取/修改设置（downloadQuality、downloadFormat、maxConcurrency(1/2/3/5/10)、downloadDir、maxSpeedKBps、timeoutSec、autoRetries、cookiesFile） |
+| GET/PUT | `/settings` | 读取/修改设置（downloadQuality、downloadFormat、maxConcurrency(1/2/3/5/10)、downloadDir、maxSpeedKBps、timeoutSec、autoRetries、cookiesFile、proxyUrl）；保存目录必须存在且可写 |
 | GET/POST | `/parsers` | 列出/新增自定义解析源 |
 | PUT/DELETE | `/parsers/:id` | 更新/删除自定义解析源 |
 
@@ -148,6 +156,7 @@ Base URL：`/api`（开发模式前端经 Vite 代理到 3000）
 
 命令模板中未出现 `{url}` 时，页面链接会自动追加为最后一个参数。
 | GET | `/stats` | overview（今日/已完成/下载中/失败/累计量/成功率）+ platforms + daily(14天) + recent |
+| GET | `/platforms` | 任务中出现过的平台（含自定义解析源名称与数量，供历史页筛选用） |
 | GET | `/system` | 版本、数据库状态、下载目录状态、磁盘剩余空间、队列状态 |
 | GET | `/health` | 健康检查 |
 
@@ -157,7 +166,7 @@ Base URL：`/api`（开发模式前端经 Vite 代理到 3000）
 { "error": { "code": "VIDEO_NOT_FOUND", "message": "视频不存在或已被删除" } }
 ```
 
-错误码：`INVALID_URL` `UNSUPPORTED_PLATFORM` `VIDEO_NOT_FOUND` `VIDEO_UNAVAILABLE` `AUTH_REQUIRED` `NETWORK_ERROR` `TIMEOUT` `DISK_FULL` `WRITE_ERROR` `YTDLP_MISSING` `BAD_REQUEST` `NOT_FOUND` `INTERNAL`
+错误码：`INVALID_URL` `UNSUPPORTED_PLATFORM` `VIDEO_NOT_FOUND` `VIDEO_UNAVAILABLE` `AUTH_REQUIRED` `NETWORK_ERROR` `TIMEOUT` `DISK_FULL` `WRITE_ERROR` `YTDLP_MISSING` `BAD_REQUEST` `FORBIDDEN` `NOT_FOUND` `INTERNAL`
 
 ## 测试
 
@@ -167,6 +176,9 @@ npm run media-server
 
 # API 冒烟测试（URL 校验/任务生命周期/暂停续传/失败处理/设置/统计）
 npm run test:smoke
+
+# 回归测试（断点续传字节校验/截断响应/等待任务暂停/路径穿越/跨站请求/设置校验等）
+npm run test:regression
 
 # 批量删除 API 验证
 node scripts/batch-delete-test.mjs
@@ -185,6 +197,9 @@ node scripts/recovery.mjs verify    # 校验自动恢复与断点续传
 
 ## 常见问题
 
+**Q：YouTube 等站点直连超时 / 403？**
+在「设置 → 网络设置 → 代理服务器」填写本机代理地址（如 `http://127.0.0.1:10020`），或设置环境变量 `PROXY_URL`。代理会用于 yt-dlp 解析/下载、直链 HTTP(S) 下载与直链探测；本机与局域网地址自动直连。支持 HTTP(S) 与 SOCKS5 代理，修改后对之后发起的任务生效。
+
 **Q：YouTube/Bilibili 解析后提示“服务器未安装 yt-dlp”？**
 安装 yt-dlp 后重启服务：`python -m pip install --target tools/ytdlp yt-dlp`，或下载 `yt-dlp.exe` 放入 `tools/`。
 
@@ -201,7 +216,7 @@ node scripts/recovery.mjs verify    # 校验自动恢复与断点续传
 需要 ffmpeg。将 `ffmpeg.exe` 放入 `tools/` 或加入 PATH（Docker 镜像已内置）。
 
 **Q：暂停后能恢复吗？重启后呢？**
-能。暂停保留 `.part` 文件与已下载字节数，继续时通过 HTTP Range / yt-dlp `.part` 断点续传；服务重启后自动恢复未完成任务，已完成任务不会重复下载。
+能。暂停保留 `.part` 文件与已下载字节数，继续时通过 HTTP Range / yt-dlp `.part` 断点续传；服务重启后自动恢复未完成任务，已完成任务不会重复下载。续传以 `.part` 实际大小为准，进程崩溃导致数据库进度落后时也不会重复写入或损坏文件；连接被提前截断时任务会失败而不是生成残缺的“已完成”文件。
 
 **Q：磁盘空间不足？**
 下载前会检查剩余空间并给出“磁盘空间不足”提示；写入失败（ENOSPC）同样映射为明确错误。

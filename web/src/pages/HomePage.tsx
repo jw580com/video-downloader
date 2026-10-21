@@ -40,6 +40,7 @@ export default function HomePage() {
   const toast = useToast();
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
+  const parseSeq = useRef(0);
 
   useEffect(() => {
     if (settings && !info) {
@@ -51,9 +52,12 @@ export default function HomePage() {
 
   const estimate = useMemo(() => {
     if (!info) return undefined;
-    if (info.sizeBytes) return info.sizeBytes;
-    return undefined;
-  }, [info]);
+    const matched = info.formats.find((f) => f.value === format);
+    if (matched?.sizeBytes) return matched.sizeBytes;
+    // 音频格式没有单独大小时，不要拿整段视频大小冒充
+    if (format === 'mp3' || format === 'm4a') return undefined;
+    return info.sizeBytes;
+  }, [info, format]);
 
   const handleParse = async () => {
     if (parsing) return;
@@ -69,9 +73,12 @@ export default function HomePage() {
       setError('URL 无效，请输入以 http:// 或 https:// 开头的链接');
       return;
     }
+    const seq = ++parseSeq.current;
     setParsing(true);
     try {
       const { info: parsed } = await api.parse(trimmed);
+      // 用户在解析期间修改了链接或重新解析：丢弃过期结果
+      if (seq !== parseSeq.current) return;
       setInfo(parsed);
       if (parsed.qualities.some((q) => q.value === quality) === false) {
         setQuality(parsed.qualities[0]?.value ?? 'best');
@@ -85,11 +92,12 @@ export default function HomePage() {
         toast.success('解析成功', `${parsed.platformName} · ${parsed.title}`);
       }
     } catch (e) {
+      if (seq !== parseSeq.current) return;
       const msg = e instanceof Error ? e.message : '解析失败';
       setError(msg);
       toast.error('解析失败', msg);
     } finally {
-      setParsing(false);
+      if (seq === parseSeq.current) setParsing(false);
     }
   };
 
