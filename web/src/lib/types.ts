@@ -83,6 +83,7 @@ export interface VideoInfo {
   qualities: QualityOption[];
   formats: FormatOption[];
   sizeBytes?: number;
+  qualitySizes?: Record<string, number>;
   downloadable: boolean;
   warning?: string;
   duplicate?: DuplicateInfo;

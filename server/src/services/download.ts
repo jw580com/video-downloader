@@ -796,6 +796,9 @@ export class DownloadEngine {
     ];
     if (settings.proxyUrl) args.push('--proxy', settings.proxyUrl);
     if (settings.maxSpeedKBps > 0) args.push('--limit-rate', `${Math.round(settings.maxSpeedKBps)}K`);
+    if (ffmpeg && ['mp4', 'webm', 'mkv'].includes(task.format)) {
+      args.push('--merge-output-format', task.format);
+    }
     const cookiesFile = task.cookiesFile || settings.cookiesFile;
     if (cookiesFile && fs.existsSync(cookiesFile)) {
       args.push('--cookies', cookiesFile);

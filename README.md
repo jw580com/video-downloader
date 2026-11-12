@@ -62,6 +62,16 @@ npm start
 
 未安装 yt-dlp 时，平台 URL 仍可解析出公开元数据（oEmbed/页面信息）用于预览，但下载会给出明确提示。
 
+### 更新 yt-dlp（遇到 403 / 格式不可用时优先执行）
+
+平台接口经常变化，旧版 yt-dlp 会出现 `HTTP 403` 或 `Requested format is not available`。执行：
+
+```bash
+npm run update:ytdlp
+```
+
+脚本会读取 `.env` 中的代理并更新 `tools/ytdlp`，完成后重启服务。Bilibili 等需要合并音视频的平台还需要 `ffmpeg`（放入 `tools/ffmpeg.exe` 或加入 PATH）。
+
 ## 环境变量
 
 复制 `.env.example` 为 `.env`（可选，均有默认值）：
@@ -198,7 +208,7 @@ node scripts/recovery.mjs verify    # 校验自动恢复与断点续传
 ## 常见问题
 
 **Q：YouTube 等站点直连超时 / 403？**
-在「设置 → 网络设置 → 代理服务器」填写本机代理地址（如 `http://127.0.0.1:10020`），或设置环境变量 `PROXY_URL`。代理会用于 yt-dlp 解析/下载、直链 HTTP(S) 下载与直链探测；本机与局域网地址自动直连。支持 HTTP(S) 与 SOCKS5 代理，修改后对之后发起的任务生效。
+优先更新 yt-dlp：`npm run update:ytdlp`（YouTube 接口变化会频繁导致旧版 403）。然后在「设置 → 网络设置 → 代理服务器」填写本机代理地址（如 `http://127.0.0.1:10020`），或设置环境变量 `PROXY_URL`。代理会用于 yt-dlp 解析/下载、直链 HTTP(S) 下载与直链探测；本机与局域网地址自动直连。支持 HTTP(S) 与 SOCKS5 代理，修改后对之后发起的任务生效。
 
 **Q：YouTube/Bilibili 解析后提示“服务器未安装 yt-dlp”？**
 安装 yt-dlp 后重启服务：`python -m pip install --target tools/ytdlp yt-dlp`，或下载 `yt-dlp.exe` 放入 `tools/`。

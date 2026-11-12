@@ -19,6 +19,7 @@
     "start": "npm --workspace @vdm/server run start",
     "typecheck": "npm --workspace @vdm/server run typecheck && npm --workspace @vdm/web run typecheck",
     "media-server": "node scripts/media-server.mjs",
+    "update:ytdlp": "node scripts/update-ytdlp.mjs",
     "test:smoke": "node scripts/smoke.mjs",
     "test:regression": "node scripts/regression.mjs",
     "test:batch-delete": "node scripts/batch-delete-test.mjs",

@@ -42,6 +42,8 @@ export interface VideoInfo {
   qualities: QualityOption[];
   formats: FormatOption[];
   sizeBytes?: number;
+  /** 各画质的估算大小（视频流 + 音频流），用于任务进度与磁盘预估 */
+  qualitySizes?: Record<string, number>;
   downloadable: boolean;
   warning?: string;
   duplicate?: DuplicateInfo;
@@ -200,11 +202,20 @@ function fromYtdlp(u: URL, info: YtDlpInfo, platform: Platform): VideoInfo {
   if (formats.length === 0) {
     formats.push({ value: 'mp4', label: 'MP4' });
   }
-  // 估算文件大小：优先“最高画质的视频流”，避免把纯音频或合并后的估算值当成整片大小
+  // 估算文件大小：最高画质视频流 + 最佳音频流；并按画质给出估算值
   const sizeFmt = [...videoFmts]
     .filter((f) => sizeOf(f) > 0)
     .sort((a, b) => (b.height ?? 0) - (a.height ?? 0) || sizeOf(b) - sizeOf(a))[0];
-  const sizeBytes = sizeFmt ? sizeOf(sizeFmt) || undefined : undefined;
+  const audioSize = maxSizeOf(audioFmts);
+  const bestVideoSize = sizeFmt ? sizeOf(sizeFmt) || 0 : 0;
+  const combinedSize = bestVideoSize + audioSize;
+  const qualitySizes: Record<string, number> = {};
+  if (bestVideoSize > 0) qualitySizes.best = combinedSize;
+  for (const h of heights) {
+    const videoSize = maxSizeOf(videoFmts.filter((f) => f.height === h));
+    if (videoSize > 0) qualitySizes[String(h)] = videoSize + audioSize;
+  }
+  const sizeBytes = combinedSize > 0 ? combinedSize : undefined;
 
   return {
     url: u.href,
@@ -219,6 +230,7 @@ function fromYtdlp(u: URL, info: YtDlpInfo, platform: Platform): VideoInfo {
     qualities,
     formats,
     sizeBytes,
+    ...(Object.keys(qualitySizes).length > 0 ? { qualitySizes } : {}),
     downloadable: true,
   };
 }

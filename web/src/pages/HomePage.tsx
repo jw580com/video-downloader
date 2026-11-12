@@ -53,11 +53,12 @@ export default function HomePage() {
   const estimate = useMemo(() => {
     if (!info) return undefined;
     const matched = info.formats.find((f) => f.value === format);
-    if (matched?.sizeBytes) return matched.sizeBytes;
     // 音频格式没有单独大小时，不要拿整段视频大小冒充
-    if (format === 'mp3' || format === 'm4a') return undefined;
-    return info.sizeBytes;
-  }, [info, format]);
+    if (format === 'mp3' || format === 'm4a') return matched?.sizeBytes;
+    const qualitySize = info.qualitySizes?.[quality];
+    if (qualitySize) return qualitySize;
+    return matched?.sizeBytes ?? info.sizeBytes;
+  }, [info, format, quality]);
 
   const handleParse = async () => {
     if (parsing) return;
@@ -105,6 +106,11 @@ export default function HomePage() {
     if (!info || adding) return;
     setAdding(true);
     try {
+      const matchedFormat = info.formats.find((f) => f.value === format);
+      const totalBytes =
+        format === 'mp3' || format === 'm4a'
+          ? (matchedFormat?.sizeBytes ?? 0)
+          : (info.qualitySizes?.[quality] ?? (quality === 'best' ? (info.sizeBytes ?? 0) : 0));
       const { task } = await api.createTask({
         url: info.url,
         quality,
@@ -115,7 +121,7 @@ export default function HomePage() {
         author: info.author,
         durationSec: info.durationSec,
         formatId: info.formatId,
-        totalBytes: info.sizeBytes ?? 0,
+        totalBytes,
         engine: info.engine,
         platform: info.platform,
         platformName: info.platformName,

@@ -195,7 +195,19 @@ export function mapYtdlpError(tail: string): AppError {
     return new AppError('VIDEO_UNAVAILABLE', '请求过于频繁（HTTP 429），请稍后重试');
   }
   if (/http error 403|forbidden/i.test(t)) {
-    return new AppError('AUTH_REQUIRED', '该视频需要登录或存在访问控制，无法下载（HTTP 403）');
+    return new AppError(
+      'AUTH_REQUIRED',
+      '该视频被平台拒绝访问（HTTP 403）。可能是登录/风控限制，或 yt-dlp 版本过旧；可执行 npm run update:ytdlp 更新，并在设置中配置 Cookie 后重试',
+    );
+  }
+  if (/requested format is not available|no video formats found/i.test(t)) {
+    return new AppError(
+      'VIDEO_UNAVAILABLE',
+      '所选画质/格式不可用：可能需要登录 Cookie，或缺少 ffmpeg 合并音视频；可更新 yt-dlp 或改选其他清晰度',
+    );
+  }
+  if (/ffmpeg (is )?not (found|installed)|ffprobe .*not found/i.test(t)) {
+    return new AppError('YTDLP_MISSING', '合并音视频需要 ffmpeg，请将 ffmpeg 放入 tools/ 或加入 PATH');
   }
   if (/unable to download|network|connection|getaddrinfo|econn|dns/i.test(t)) {
     return new AppError('NETWORK_ERROR');
@@ -326,13 +338,20 @@ export async function runYtdlpJson(
   }
 }
 
-/** 根据质量与格式构建 yt-dlp 格式选择器（优先渐进式单文件，避免依赖 ffmpeg） */
+/** 根据质量与格式构建 yt-dlp 格式选择器（有 ffmpeg 时合并音视频） */
 export function buildFormatSelector(quality: string, format: string, ffmpeg: boolean): string {
   const h = quality === 'best' ? '' : `[height<=${quality}]`;
   if (format === 'mp3') return 'bestaudio/best';
   if (format === 'm4a') return 'bestaudio[ext=m4a]/bestaudio';
   if (ffmpeg) {
-    return `bestvideo${h}[ext=${format}]+bestaudio/bestvideo${h}+bestaudio/best${h}[ext=${format}]/best${h}`;
+    if (format === 'mp4') {
+      // 优先 mp4 视频 + m4a 音频，保证合并后容器仍是用户选择的 MP4
+      return `bestvideo${h}[ext=mp4]+bestaudio[ext=m4a]/bestvideo${h}[ext=mp4]+bestaudio/bestvideo${h}+bestaudio[ext=m4a]/bestvideo${h}+bestaudio/best${h}[ext=mp4]/best${h}`;
+    }
+    if (format === 'webm') {
+      return `bestvideo${h}[ext=webm]+bestaudio[ext=webm]/bestvideo${h}+bestaudio[ext=webm]/bestvideo${h}+bestaudio/best${h}[ext=webm]/best${h}`;
+    }
+    return `bestvideo${h}+bestaudio/best${h}`;
   }
   return `best${h}[ext=${format}]/best${h}`;
 }

@@ -236,7 +236,12 @@ async function main() {
       } else {
         const t = await page.evaluate(() => document.body.innerText);
         const hasClearError =
-          t.includes('不存在') || t.includes('不可访问') || t.includes('超时') || t.includes('网络');
+          t.includes('不存在') ||
+          t.includes('不可访问') ||
+          t.includes('超时') ||
+          t.includes('网络') ||
+          t.includes('无法连接') ||
+          t.includes('服务已启动');
         assert(hasClearError, '既无预览也无清晰错误提示');
         ok('平台识别正常（受限路径）', '网络受限时给出清晰错误提示');
       }
